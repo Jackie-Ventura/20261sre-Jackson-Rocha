@@ -1,0 +1,93 @@
+services:
+  # --- Object Storage Layer (S3 Simulation) ---
+  minio:
+    image: minio/minio
+    container_name: olist_minio
+    ports:
+      - "9000:9000" # API
+      - "9001:9001" # Console UI
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password123
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - olist_network
+
+  # Helper to create initial buckets
+  createbuckets:
+    image: minio/mc
+    container_name: olist_minio_setup
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/mc config host add myminio http://minio:9000 admin password123) do echo '...waiting for minio...' && sleep 1; done;
+      /usr/bin/mc mb myminio/landing;
+      /usr/bin/mc mb myminio/archive;
+      /usr/bin/mc mb myminio/quarantine;
+      exit 0;
+      "
+    networks:
+      - olist_network
+
+  # --- Analysis OLAP Layer ---
+  postgres:
+    image: postgres:15
+    container_name: olist_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: olist_db
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - olist_network
+
+  # --- Ingestion Layer (Python + DuckDB) ---
+  ingestor:
+    build:
+      context: ./ingestion
+    container_name: olist_ingestor
+    depends_on:
+      - minio
+      - postgres
+    environment:
+      - S3_ENDPOINT=http://minio:9000
+      - S3_ACCESS_KEY=admin
+      - S3_SECRET_KEY=password123
+      - DB_HOST=postgres
+      - DB_NAME=olist_db
+      - DB_USER=user
+      - DB_PASS=password123
+    volumes:
+      - ./ingestion:/app
+    networks:
+      - olist_network
+
+  # --- Visualization Layer ---
+  grafana:
+    image: grafana/grafana:latest
+    container_name: olist_grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - olist_network
+
+networks:
+  olist_network:
+    driver: bridge
+
+volumes:
+  minio_data:
+  postgres_data:
+  grafana_data:
